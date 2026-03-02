@@ -1,32 +1,36 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import tensorflow as tf
 import numpy as np
+from PIL import Image
+import io
 
 app = Flask(__name__)
 CORS(app)
 
-# Dummy model: always predicts random 0 or 1
-def dummy_model(image_array):
-    return np.random.randint(0, 2)  # 0 = Normal, 1 = Abnormal
+# Load the TensorFlow AI model
+model = tf.keras.models.load_model("model.h5")
 
-@app.route("/api/predict", methods=["POST"])
+@app.route("/predict", methods=["POST"])
 def predict():
-    if "image" not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
-
-    file = request.files["image"]
-    # Just ignore the actual image for now
-    result = dummy_model(None)
-
-    return jsonify({
-        "prediction": "Abnormal" if result == 1 else "Normal",
-        "confidence": float(np.random.rand()),  # random confidence
-        "disclaimer": "Educational tool only. Not medical advice."
-    })
+    try:
+        # Get image from request
+        file = request.files["image"]
+        image = Image.open(io.BytesIO(file.read())).resize((224,224))  # resize to model input
+        img_array = np.expand_dims(np.array(image)/255.0, axis=0)
+        
+        # Predict using model
+        prediction = model.predict(img_array)
+        result = int(np.argmax(prediction))  # 0=Normal, 1=Abnormal
+        
+        return jsonify({"result": "Abnormal" if result==1 else "Normal"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/")
 def home():
-    return "Backend Running ✅"
+    return "Backend Running"
 
 if __name__ == "__main__":
     app.run()
