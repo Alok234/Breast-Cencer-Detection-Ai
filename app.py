@@ -9,8 +9,11 @@ import os  # <-- for environment variables
 app = Flask(__name__)
 CORS(app)
 
-# Load the TensorFlow AI model
+# Load your old .h5 model
 model = tf.keras.models.load_model("test_model.h5")
+
+# Save in TensorFlow SavedModel format (folder)
+model.save("test_model")  # this creates a folder
 
 @app.route("/predict", methods=["POST"])
 def predict():
