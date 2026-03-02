@@ -4,6 +4,7 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 import io
+import os  # <-- for environment variables
 
 app = Flask(__name__)
 CORS(app)
@@ -33,4 +34,6 @@ def home():
     return "Backend Running"
 
 if __name__ == "__main__":
-    app.run()
+    # Use Render's dynamic port
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
