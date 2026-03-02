@@ -9,7 +9,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Load the TensorFlow AI model
-model = tf.keras.models.load_model("model.h5")
+model = tf.keras.models.load_model("test_model.h5")
 
 @app.route("/predict", methods=["POST"])
 def predict():
