@@ -1,58 +1,81 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import tensorflow as tf
-import numpy as np
-from PIL import Image
-import io
 import os
+import zipfile
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+from tensorflow.keras.applications import ResNet50, InceptionV3, MobileNetV2, EfficientNetB0, VGG16
+from sklearn.model_selection import train_test_split
 
-app = Flask(__name__)
-CORS(app)
+# === Step 1: Unzip dataset ===
+zip_path = "dataset.zip"  # your zip file
+extract_dir = "dataset_unzip"
 
-# === Fix: Load old .h5 model safely ===
-try:
-    # Load model without compiling
-    old_model = tf.keras.models.load_model("test_model.h5", compile=False)
+if not os.path.exists(extract_dir):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_dir)
+    print("Dataset unzipped.")
+else:
+    print("Dataset already unzipped.")
 
-    # Rebuild input layer to avoid batch_shape issues
-    new_input = tf.keras.layers.Input(shape=(224, 224, 3), name="input_layer")  # match your resized input
-    model = tf.keras.models.Model(inputs=new_input, outputs=old_model(new_input))
+# === Step 2: Load CSV ===
+csv_files = [f for f in os.listdir(extract_dir) if f.endswith('.csv')]
+if len(csv_files) == 0:
+    raise Exception("No CSV file found in the zip!")
+csv_path = os.path.join(extract_dir, csv_files[0])
+df = pd.read_csv(csv_path)
 
-    # Optionally save in SavedModel format for future use
-    model.save("test_model_saved")
-    print("Model loaded and ready.")
-except Exception as e:
-    print("Error loading model:", e)
-    model = None
+# Map labels to 0/1
+df['label'] = df['label'].map({"Normal": 0, "Abnormal": 1})
 
-@app.route("/predict", methods=["POST"])
-def predict():
-    if model is None:
-        return jsonify({"error": "Model not loaded"}), 500
+# === Step 3: Setup image directory ===
+# Assumes images are somewhere inside the zip folder
+image_dir = os.path.join(extract_dir, "images")  # adjust if different
+if not os.path.exists(image_dir):
+    # If images are in root folder of zip
+    image_dir = extract_dir
 
-    try:
-        # Get image from request
-        file = request.files.get("image")
-        if file is None:
-            return jsonify({"error": "No image provided"}), 400
+# === Step 4: Prepare tf.data.Dataset ===
+def load_image(filename, label):
+    img_path = os.path.join(image_dir, filename)
+    image = tf.io.read_file(img_path)
+    image = tf.image.decode_png(image, channels=3)
+    image = tf.image.resize(image, [224, 224])
+    image = image / 255.0
+    return image, label
 
-        image = Image.open(io.BytesIO(file.read())).convert("RGB")
-        image = image.resize((224, 224))  # resize to model input
-        img_array = np.expand_dims(np.array(image)/255.0, axis=0)
+train_df, val_df = train_test_split(df, test_size=0.2, random_state=42, stratify=df['label'])
 
-        # Predict
-        prediction = model.predict(img_array)
-        result = int(np.argmax(prediction))  # assuming classification
-        return jsonify({"result": "Abnormal" if result == 1 else "Normal"})
+train_ds = tf.data.Dataset.from_tensor_slices((train_df['filename'].values, train_df['label'].values))
+train_ds = train_ds.map(load_image).batch(16).shuffle(100)
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+val_ds = tf.data.Dataset.from_tensor_slices((val_df['filename'].values, val_df['label'].values))
+val_ds = val_ds.map(load_image).batch(16)
 
-@app.route("/")
-def home():
-    return "Backend Running"
+# === Step 5: Build 5-model ensemble ===
+input_layer = layers.Input(shape=(224,224,3))
 
-if __name__ == "__main__":
-    # Dynamic port for Render
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+resnet = ResNet50(weights='imagenet', include_top=False, input_tensor=input_layer, pooling='avg')
+inception = InceptionV3(weights='imagenet', include_top=False, input_tensor=input_layer, pooling='avg')
+mobilenet = MobileNetV2(weights='imagenet', include_top=False, input_tensor=input_layer, pooling='avg')
+efficientnet = EfficientNetB0(weights='imagenet', include_top=False, input_tensor=input_layer, pooling='avg')
+vgg = VGG16(weights='imagenet', include_top=False, input_tensor=input_layer, pooling='avg')
+
+combined = layers.Concatenate()([resnet.output, inception.output, mobilenet.output, efficientnet.output, vgg.output])
+
+x = layers.Dense(512, activation='relu')(combined)
+x = layers.Dropout(0.5)(x)
+output = layers.Dense(1, activation='sigmoid')(x)
+
+model = Model(inputs=input_layer, outputs=output)
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# === Step 6: Train ensemble on dataset ===
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=5  # increase if you want better accuracy
+)
+
+# === Step 7: Save weights ===
+model.save_weights("breast_ensemble_model.h5")
+print("Training complete. Weights saved as breast_ensemble_model.h5")
